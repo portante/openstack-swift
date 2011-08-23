@@ -3,7 +3,11 @@
 %endif
 
 Name:             openstack-swift
+<<<<<<< HEAD
 Version:          1.1.0
+=======
+Version:          1.4.0
+>>>>>>> 6cabac0... adding uid/gid for swift bz 732693
 Release:          2%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
@@ -171,9 +175,9 @@ install -p -m 0644 %{SOURCE20} %{buildroot}%{_sysconfdir}/tmpfiles.d/openstack-s
 rm -rf %{buildroot}
 
 %pre
-getent group swift >/dev/null || groupadd -r swift
+getent group swift >/dev/null || groupadd -r swift -g 160
 getent passwd swift >/dev/null || \
-useradd -r -g swift -d %{_sharedstatedir}/swift -s /sbin/nologin \
+useradd -r -g swift -u 160 -d %{_sharedstatedir}/swift -s /sbin/nologin \
 -c "OpenStack Swift Daemons" swift
 exit 0
 
@@ -329,6 +333,16 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Tue Aug 23 2011 David Nalley <david@gnsa.us> - 1.4.0-2
+- adding uid:gid for bz 732693
+
+* Sat Jun 04 2011 David Nalley <david@gnsa.us> - 1.4.0-1
+- Update to 1.4.0
+
+* Fri May 20 2011 David Nalley <david@gnsa.us> - 1.3.0-1
+- Update to 1.3.0 
+
+>>>>>>> 6cabac0... adding uid/gid for swift bz 732693
 * Tue Feb 08 2011 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.1.0-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_15_Mass_Rebuild
 
