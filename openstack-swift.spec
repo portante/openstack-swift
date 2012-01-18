@@ -4,7 +4,7 @@
 
 Name:             openstack-swift
 Version:          1.4.6
-Release:          1%{?dist}
+Release:          2%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
 Group:            Development/Languages
@@ -202,7 +202,7 @@ if [ $1 = 0 ] ; then
     /sbin/chkconfig --del openstack-swift-container
 fi
 
-/%postun container
+%postun container
 if [ "$1" -ge "1" ] ; then
     /sbin/service openstack-swift-container condrestart >/dev/null 2>&1 || :
 fi
@@ -312,6 +312,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Fri Feb 24 2012 Alan Pevec <apevec@redhat.com> 1.4.6-2
+- typo bz 785106
+
 * Mon Feb 13 2012 Alan Pevec <apevec@redhat.com> 1.4.6-1
 - Update to 1.4.6
 
