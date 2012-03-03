@@ -4,7 +4,7 @@
 
 Name:             openstack-swift
 Version:          1.4.6
-Release:          2%{?dist}
+Release:          3%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
 Group:            Development/Languages
@@ -312,6 +312,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Mon Mar 05 2012 Derek Higgins <derekh@redhat.com> 1.4.6-3
+- Create pid directory if required
+
 * Fri Feb 24 2012 Alan Pevec <apevec@redhat.com> 1.4.6-2
 - typo bz 785106
 
