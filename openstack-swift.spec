@@ -4,7 +4,7 @@
 
 Name:             openstack-swift
 Version:          1.4.8
-Release:          1%{?dist}
+Release:          2.%{?dist}42cb938_9e713e1
 Summary:          OpenStack Object Storage (swift)
 
 Group:            Development/Languages
@@ -249,8 +249,6 @@ fi
 %{_bindir}/swift-get-nodes
 %{_bindir}/swift-init
 %{_bindir}/swift-ring-builder
-%{_bindir}/swift-stats-populate
-%{_bindir}/swift-stats-report
 %{_bindir}/swift-dispersion-populate
 %{_bindir}/swift-dispersion-report
 %{_bindir}/swift-recon*
@@ -312,6 +310,10 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Tue Mar 13 2012 Derek Higgins <derekh@redhat.com> 1.4.8-2
+- Remove old stats tools
+- add "." required by puppet build task
+
 * Wed Mar 07 2012 Derek Higgins <derekh@redhat.com> 1.4.8-1
 - Update to 1.4.8
 
