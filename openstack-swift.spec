@@ -3,8 +3,8 @@
 %endif
 
 Name:             openstack-swift
-Version:          1.4.8
-Release:          2.%{?dist}42cb938_9e713e1
+Version:          1.4.9
+Release:          1.%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
 Group:            Development/Languages
@@ -310,6 +310,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Tue Mar 20 2012 Derek Higgins <derekh@redhat.com> 1.4.9-1
+- Update version to 1.4.9
+
 * Tue Mar 13 2012 Derek Higgins <derekh@redhat.com> 1.4.8-2
 - Remove old stats tools
 - add "." required by puppet build task
