@@ -3,7 +3,7 @@
 %endif
 
 Name:             openstack-swift
-Version:          1.4.8
+Version:          1.5.1
 Release:          1%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
@@ -323,6 +323,7 @@ fi
 %{_mandir}/man1/swift.1*
 %{_mandir}/man1/swift-get-nodes.1*
 %{_mandir}/man1/swift-init.1*
+%{_mandir}/man1/swift-orphans.1*
 %{_mandir}/man1/swift-recon.1*
 %{_mandir}/man1/swift-ring-builder.1*
 %config(noreplace) %{_sysconfdir}/tmpfiles.d/openstack-swift.conf
@@ -390,8 +391,10 @@ fi
 %defattr(-,root,root,-)
 %doc etc/object-server.conf-sample etc/rsyncd.conf-sample
 %{_mandir}/man5/object-server.conf.5*
+%{_mandir}/man5/object-expirer.conf.5*
 %{_mandir}/man1/swift-object-auditor.1*
 %{_mandir}/man1/swift-object-info.1*
+%{_mandir}/man1/swift-object-expirer.1*
 %{_mandir}/man1/swift-object-replicator.1*
 %{_mandir}/man1/swift-object-server.1*
 %{_mandir}/man1/swift-object-updater.1*
@@ -424,6 +427,7 @@ fi
 %changelog
 * Sat Jun 2 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
 - Remove old stats binaries.
+- Add new man pages.
 
 * Thu Mar 22 2012 Alan Pevec <apevec@redhat.com> 1.4.8-1
 - Update to 1.4.8
