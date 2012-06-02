@@ -3,7 +3,7 @@
 %endif
 
 Name:             openstack-swift
-Version:          1.4.6
+Version:          1.4.8
 Release:          1%{?dist}
 Summary:          OpenStack Object Storage (swift)
 
@@ -12,8 +12,11 @@ License:          ASL 2.0
 URL:              http://launchpad.net/swift
 Source0:          http://launchpad.net/swift/essex/%{version}/+download/swift-%{version}.tar.gz
 Source2:          %{name}-account.service
+Source21:         %{name}-account@.service
 Source4:          %{name}-container.service
+Source41:         %{name}-container@.service
 Source5:          %{name}-object.service
+Source51:         %{name}-object@.service
 Source6:          %{name}-proxy.service
 Source20:         %{name}.tmpfs
 BuildRoot:        %{_tmppath}/swift-%{version}-%{release}-root-%(%{__id_u} -n)
@@ -140,9 +143,8 @@ mkdir -p doc/build
 %if 0%{?rhel} >= 6
 export PYTHONPATH="$( pwd ):$PYTHONPATH"
 SPHINX_DEBUG=1 sphinx-1.0-build -b html doc/source doc/build/html
-SPHINX_DEBUG=1 sphinx-1.0-build -b man doc/source doc/build/man
 %endif
-# Fix hidden-file-or-dir warning 
+# Fix hidden-file-or-dir warning
 #rm doc/build/html/.buildinfo
 
 %install
@@ -150,22 +152,38 @@ rm -rf %{buildroot}
 %{__python} setup.py install -O1 --skip-build --root %{buildroot}
 # systemd units
 install -p -D -m 755 %{SOURCE2} %{buildroot}%{_unitdir}/%{name}-account.service
+install -p -D -m 755 %{SOURCE21} %{buildroot}%{_unitdir}/%{name}-account@.service
 install -p -D -m 755 %{SOURCE4} %{buildroot}%{_unitdir}/%{name}-container.service
+install -p -D -m 755 %{SOURCE41} %{buildroot}%{_unitdir}/%{name}-container@.service
 install -p -D -m 755 %{SOURCE5} %{buildroot}%{_unitdir}/%{name}-object.service
+install -p -D -m 755 %{SOURCE51} %{buildroot}%{_unitdir}/%{name}-object@.service
 install -p -D -m 755 %{SOURCE6} %{buildroot}%{_unitdir}/%{name}-proxy.service
 # Remove tests
 rm -fr %{buildroot}/%{python_sitelib}/test
 # Misc other
 install -d -m 755 %{buildroot}%{_sysconfdir}/swift
 install -d -m 755 %{buildroot}%{_sysconfdir}/swift/account-server
-install -d -m 755 %{buildroot}%{_sysconfdir}/swift/auth-server
 install -d -m 755 %{buildroot}%{_sysconfdir}/swift/container-server
 install -d -m 755 %{buildroot}%{_sysconfdir}/swift/object-server
 install -d -m 755 %{buildroot}%{_sysconfdir}/swift/proxy-server
-
+# Install pid directory
+install -d -m 755 %{buildroot}%{_localstatedir}/run/swift
+install -d -m 755 %{buildroot}%{_localstatedir}/run/swift/account-server
+install -d -m 755 %{buildroot}%{_localstatedir}/run/swift/container-server
+install -d -m 755 %{buildroot}%{_localstatedir}/run/swift/object-server
+install -d -m 755 %{buildroot}%{_localstatedir}/run/swift/proxy-server
 # Swift run directories
 mkdir -p %{buildroot}%{_sysconfdir}/tmpfiles.d
 install -p -m 0644 %{SOURCE20} %{buildroot}%{_sysconfdir}/tmpfiles.d/openstack-swift.conf
+# man pages
+install -d -m 755 %{buildroot}%{_mandir}/man5
+for m in doc/manpages/*.5; do
+  install -p -m 0644 $m %{buildroot}%{_mandir}/man5
+done
+install -d -m 755 %{buildroot}%{_mandir}/man1
+for m in doc/manpages/*.1; do
+  install -p -m 0644 $m %{buildroot}%{_mandir}/man1
+done
 
 %clean
 rm -rf %{buildroot}
@@ -297,8 +315,19 @@ fi
 %files
 %defattr(-,root,root,-)
 %doc AUTHORS LICENSE README
+%doc etc/dispersion.conf-sample etc/drive-audit.conf-sample etc/object-expirer.conf-sample
+%doc etc/swift.conf-sample
+%{_mandir}/man5/dispersion.conf.5*
+%{_mandir}/man1/swift-dispersion-populate.1*
+%{_mandir}/man1/swift-dispersion-report.1*
+%{_mandir}/man1/swift.1*
+%{_mandir}/man1/swift-get-nodes.1*
+%{_mandir}/man1/swift-init.1*
+%{_mandir}/man1/swift-recon.1*
+%{_mandir}/man1/swift-ring-builder.1*
 %config(noreplace) %{_sysconfdir}/tmpfiles.d/openstack-swift.conf
 %dir %{_sysconfdir}/swift
+%dir %attr(0755, swift, root) %{_localstatedir}/run/swift
 %dir %{python_sitelib}/swift
 %{_bindir}/swift
 %{_bindir}/swift-account-audit
@@ -322,20 +351,34 @@ fi
 %files account
 %defattr(-,root,root,-)
 %doc etc/account-server.conf-sample
+%{_mandir}/man5/account-server.conf.5*
+%{_mandir}/man1/swift-account-auditor.1*
+%{_mandir}/man1/swift-account-reaper.1*
+%{_mandir}/man1/swift-account-replicator.1*
+%{_mandir}/man1/swift-account-server.1*
 %dir %{_unitdir}/%{name}-account.service
+%dir %{_unitdir}/%{name}-account@.service
 %dir %{_sysconfdir}/swift/account-server
+%dir %attr(0755, swift, root) %{_localstatedir}/run/swift/account-server
 %{_bindir}/swift-account-auditor
 %{_bindir}/swift-account-reaper
 %{_bindir}/swift-account-replicator
 %{_bindir}/swift-account-server
 %{python_sitelib}/swift/account
 
-
 %files container
 %defattr(-,root,root,-)
 %doc etc/container-server.conf-sample
+%{_mandir}/man5/container-server.conf.5*
+%{_mandir}/man1/swift-container-auditor.1*
+%{_mandir}/man1/swift-container-replicator.1*
+%{_mandir}/man1/swift-container-server.1*
+%{_mandir}/man1/swift-container-sync.1*
+%{_mandir}/man1/swift-container-updater.1*
 %dir %{_unitdir}/%{name}-container.service
+%dir %{_unitdir}/%{name}-container@.service
 %dir %{_sysconfdir}/swift/container-server
+%dir %attr(0755, swift, root) %{_localstatedir}/run/swift/container-server
 %{_bindir}/swift-container-auditor
 %{_bindir}/swift-container-server
 %{_bindir}/swift-container-replicator
@@ -345,9 +388,17 @@ fi
 
 %files object
 %defattr(-,root,root,-)
-%doc etc/account-server.conf-sample etc/rsyncd.conf-sample
+%doc etc/object-server.conf-sample etc/rsyncd.conf-sample
+%{_mandir}/man5/object-server.conf.5*
+%{_mandir}/man1/swift-object-auditor.1*
+%{_mandir}/man1/swift-object-info.1*
+%{_mandir}/man1/swift-object-replicator.1*
+%{_mandir}/man1/swift-object-server.1*
+%{_mandir}/man1/swift-object-updater.1*
 %dir %{_unitdir}/%{name}-object.service
+%dir %{_unitdir}/%{name}-object@.service
 %dir %{_sysconfdir}/swift/object-server
+%dir %attr(0755, swift, root) %{_localstatedir}/run/swift/object-server
 %{_bindir}/swift-object-auditor
 %{_bindir}/swift-object-info
 %{_bindir}/swift-object-replicator
@@ -358,8 +409,11 @@ fi
 %files proxy
 %defattr(-,root,root,-)
 %doc etc/proxy-server.conf-sample
+%{_mandir}/man5/proxy-server.conf.5*
+%{_mandir}/man1/swift-proxy-server.1*
 %dir %{_unitdir}/%{name}-proxy.service
 %dir %{_sysconfdir}/swift/proxy-server
+%dir %attr(0755, swift, root) %{_localstatedir}/run/swift/proxy-server
 %{_bindir}/swift-proxy-server
 %{python_sitelib}/swift/proxy
 
@@ -370,6 +424,12 @@ fi
 %changelog
 * Sat Jun 2 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
 - Remove old stats binaries.
+
+* Thu Mar 22 2012 Alan Pevec <apevec@redhat.com> 1.4.8-1
+- Update to 1.4.8
+
+* Fri Mar 09 2012 Alan Pevec <apevec@redhat.com> 1.4.7-1
+- Update to 1.4.7
 
 * Mon Feb 13 2012 Alan Pevec <apevec@redhat.com> 1.4.6-1
 - Update to 1.4.6
@@ -403,7 +463,7 @@ fi
 - Update to 1.4.0
 
 * Fri May 20 2011 David Nalley <david@gnsa.us> - 1.3.0-1
-- Update to 1.3.0 
+- Update to 1.3.0
 
 * Tue Feb 08 2011 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.1.0-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_15_Mass_Rebuild
