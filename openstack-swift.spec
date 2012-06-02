@@ -307,8 +307,6 @@ fi
 %{_bindir}/swift-get-nodes
 %{_bindir}/swift-init
 %{_bindir}/swift-ring-builder
-%{_bindir}/swift-stats-populate
-%{_bindir}/swift-stats-report
 %{_bindir}/swift-dispersion-populate
 %{_bindir}/swift-dispersion-report
 %{_bindir}/swift-recon*
@@ -370,6 +368,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Sat Jun 2 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
+- Remove old stats binaries.
+
 * Mon Feb 13 2012 Alan Pevec <apevec@redhat.com> 1.4.6-1
 - Update to 1.4.6
 - Switch from SysV init scripts to systemd units rhbz#734594
