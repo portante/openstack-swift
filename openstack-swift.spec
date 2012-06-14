@@ -36,7 +36,7 @@ Requires:         python-webob >= 0.9.8
 Requires:         pyxattr
 Requires:         python-setuptools
 Requires:         python-netifaces
-Requires:         python-netifaces
+Requires:         python-swiftclient
 
 Requires(post):   systemd-units
 Requires(preun):  systemd-units
@@ -330,7 +330,6 @@ fi
 %dir %{_sysconfdir}/swift
 %dir %attr(0755, swift, root) %{_localstatedir}/run/swift
 %dir %{python_sitelib}/swift
-%{_bindir}/swift
 %{_bindir}/swift-account-audit
 %{_bindir}/swift-bench
 %{_bindir}/swift-drive-audit
@@ -425,6 +424,10 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Thu Jun 14 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
+- Remove bin/swift.
+- Add dependency on python-swiftclient.
+
 * Sat Jun 2 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
 - Remove old stats binaries.
 - Add new man pages.
