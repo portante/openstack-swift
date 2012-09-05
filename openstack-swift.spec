@@ -332,6 +332,7 @@ fi
 %dir %{python_sitelib}/swift
 %{_bindir}/swift-account-audit
 %{_bindir}/swift-bench
+%{_bindir}/swift-bench-client
 %{_bindir}/swift-drive-audit
 %{_bindir}/swift-get-nodes
 %{_bindir}/swift-init
@@ -424,6 +425,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Thu Sep 5 2012 Dan Prince <dprince@redhat.com> 1.7.1-0
+- Add swift-bench-client
+
 * Thu Jun 14 2012 Dan Prince <dprince@redhat.com> 1.5.1-1
 - Remove bin/swift.
 - Add dependency on python-swiftclient.
