@@ -314,7 +314,7 @@ fi
 
 %files
 %defattr(-,root,root,-)
-%doc AUTHORS LICENSE README
+%doc AUTHORS LICENSE README.md
 %doc etc/dispersion.conf-sample etc/drive-audit.conf-sample etc/object-expirer.conf-sample
 %doc etc/swift.conf-sample
 %{_mandir}/man5/dispersion.conf.5*
@@ -425,6 +425,9 @@ fi
 %doc LICENSE doc/build/html
 
 %changelog
+* Fri Sep 14 2012 Dan Prince <dprince@redhat.com> 1.7.1-0
+- Switch README to README.md
+
 * Thu Sep 5 2012 Dan Prince <dprince@redhat.com> 1.7.1-0
 - Add swift-bench-client
 
