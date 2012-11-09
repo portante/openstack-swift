@@ -1,0 +1,519 @@
+From fc2421b04022ac6bbe9d5014362ec5f99f94c5e0 Mon Sep 17 00:00:00 2001
+From: Peter Portante <peter.portante@redhat.com>
+Date: Tue, 25 Sep 2012 13:27:59 -0400
+Subject: [PATCH 2/5] Backport commit
+ a2ac5efaa64f57fbbe059066c6c4636dfd0715c2, 'swift
+ constraints are now settable via config', excluding
+ PEP8 changes that did not involve the constraints.
+
+---
+ etc/swift.conf-sample                | 73 ++++++++++++++++++++++++++++++++++++
+ swift/common/constraints.py          | 37 +++++++++++++-----
+ test/functional/tests.py             | 62 +++++++++++++++++++++++++-----
+ test/unit/common/test_constraints.py |  9 ++++-
+ test/unit/obj/test_server.py         |  7 +++-
+ test/unit/proxy/test_server.py       | 50 ++++++++++++++----------
+ 6 files changed, 196 insertions(+), 42 deletions(-)
+
+diff --git a/etc/swift.conf-sample b/etc/swift.conf-sample
+index 7e1c31d..2f4192a 100644
+--- a/etc/swift.conf-sample
++++ b/etc/swift.conf-sample
+@@ -1,3 +1,76 @@
+ [swift-hash]
++
++# swift_hash_path_suffix is used as part of the hashing algorithm
++# when determining data placement in the cluster. This value should
++# remain secret and MUST NOT change once a cluster has been deployed.
++
+ swift_hash_path_suffix = changeme
+ 
++
++
++# The swift-constraints section sets the basic constraints on data
++# saved in the swift cluster.
++
++[swift-constraints]
++
++# max_file_size is the largest "normal" object that can be saved in
++# the cluster. This is also the limit on the size of each segment of
++# a "large" object when using the large object manifest support.
++# This value is set in bytes. Setting it to lower than 1MiB will cause
++# some tests to fail. It is STRONGLY recommended to leave this value at
++# the default (5 * 2**30 + 2).
++
++#max_file_size = 5368709122
++
++
++# max_meta_name_length is the max number of bytes in the utf8 encoding
++# of the name portion of a metadata header.
++
++#max_meta_name_length = 128
++
++
++# max_meta_value_length is the max number of bytes in the utf8 encoding
++# of a metadata value
++
++#max_meta_value_length = 256
++
++
++# max_meta_count is the max number of metadata keys that can be stored
++# on a single account, container, or object
++
++#max_meta_count = 90
++
++
++# max_meta_overall_size is the max number of bytes in the utf8 encoding
++# of the metadata (keys + values)
++
++#max_meta_overall_size = 4096
++
++
++# max_object_name_length is the max number of bytes in the utf8 encoding
++# of an object name
++
++#max_object_name_length = 1024
++
++
++# container_listing_limit is the default (and max) number of items
++# returned for a container listing request
++
++#container_listing_limit = 10000
++
++
++# account_listing_limit is the default (and max) number of items returned
++# for an account listing request
++#account_listing_limit = 10000
++
++
++# max_account_name_length is the max number of bytes in the utf8 encoding
++# of an account name
++
++#max_account_name_length = 256
++
++
++# max_container_name_length is the max number of bytes in the utf8 encoding
++# of a container name
++
++#max_container_name_length = 256
+diff --git a/swift/common/constraints.py b/swift/common/constraints.py
+index 235dcca..0fe5078 100644
+--- a/swift/common/constraints.py
++++ b/swift/common/constraints.py
+@@ -14,29 +14,46 @@
+ # limitations under the License.
+ 
+ import os
++from ConfigParser import ConfigParser, NoSectionError, NoOptionError, \
++    RawConfigParser
+ 
+ from webob.exc import HTTPBadRequest, HTTPLengthRequired, \
+     HTTPRequestEntityTooLarge
+ 
++constraints_conf = ConfigParser()
++constraints_conf.read('/etc/swift/swift.conf')
++
++
++def constraints_conf_int(name, default):
++    try:
++        return int(constraints_conf.get('swift-constraints', name))
++    except (NoSectionError, NoOptionError):
++        return default
++
+ 
+ #: Max file size allowed for objects
+-MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 + 2
++MAX_FILE_SIZE = constraints_conf_int('max_file_size',
++                                     5368709122)  # 5 * 1024 * 1024 * 1024 + 2
+ #: Max length of the name of a key for metadata
+-MAX_META_NAME_LENGTH = 128
++MAX_META_NAME_LENGTH = constraints_conf_int('max_meta_name_length', 128)
+ #: Max length of the value of a key for metadata
+-MAX_META_VALUE_LENGTH = 256
++MAX_META_VALUE_LENGTH = constraints_conf_int('max_meta_value_length', 256)
+ #: Max number of metadata items
+-MAX_META_COUNT = 90
++MAX_META_COUNT = constraints_conf_int('max_meta_count', 90)
+ #: Max overall size of metadata
+-MAX_META_OVERALL_SIZE = 4096
++MAX_META_OVERALL_SIZE = constraints_conf_int('max_meta_overall_size', 4096)
+ #: Max object name length
+-MAX_OBJECT_NAME_LENGTH = 1024
++MAX_OBJECT_NAME_LENGTH = constraints_conf_int('max_object_name_length', 1024)
+ #: Max object list length of a get request for a container
+-CONTAINER_LISTING_LIMIT = 10000
++CONTAINER_LISTING_LIMIT = constraints_conf_int('container_listing_limit',
++                                               10000)
+ #: Max container list length of a get request for an account
+-ACCOUNT_LISTING_LIMIT = 10000
+-MAX_ACCOUNT_NAME_LENGTH = 256
+-MAX_CONTAINER_NAME_LENGTH = 256
++ACCOUNT_LISTING_LIMIT = constraints_conf_int('account_listing_limit', 10000)
++#: Max account name length
++MAX_ACCOUNT_NAME_LENGTH = constraints_conf_int('max_account_name_length', 256)
++#: Max container name length
++MAX_CONTAINER_NAME_LENGTH = constraints_conf_int('max_container_name_length',
++                                                 256)
+ 
+ 
+ def check_metadata(req, target_type):
+diff --git a/test/functional/tests.py b/test/functional/tests.py
+index b25b4fd..3b18fc4 100644
+--- a/test/functional/tests.py
++++ b/test/functional/tests.py
+@@ -27,12 +27,55 @@ import threading
+ import uuid
+ import unittest
+ import urllib
++from ConfigParser import ConfigParser
+ 
+ from test import get_config
+ from swift import Account, AuthenticationFailed, Connection, Container, \
+      File, ResponseError
+-
++from swift.common.constraints import MAX_FILE_SIZE, MAX_META_NAME_LENGTH, \
++    MAX_META_VALUE_LENGTH, MAX_META_COUNT, MAX_META_OVERALL_SIZE, \
++    MAX_OBJECT_NAME_LENGTH, CONTAINER_LISTING_LIMIT, ACCOUNT_LISTING_LIMIT, \
++    MAX_ACCOUNT_NAME_LENGTH, MAX_CONTAINER_NAME_LENGTH
++
++default_constraints = dict((
++    ('max_file_size', MAX_FILE_SIZE),
++    ('max_meta_name_length', MAX_META_NAME_LENGTH),
++    ('max_meta_value_length', MAX_META_VALUE_LENGTH),
++    ('max_meta_count', MAX_META_COUNT),
++    ('max_meta_overall_size', MAX_META_OVERALL_SIZE),
++    ('max_object_name_length', MAX_OBJECT_NAME_LENGTH),
++    ('container_listing_limit', CONTAINER_LISTING_LIMIT),
++    ('account_listing_limit', ACCOUNT_LISTING_LIMIT),
++    ('max_account_name_length', MAX_ACCOUNT_NAME_LENGTH),
++    ('max_container_name_length', MAX_CONTAINER_NAME_LENGTH)))
++constraints_conf = ConfigParser()
++conf_exists = constraints_conf.read('/etc/swift/swift.conf')
++# Constraints are set first from the test config, then from
++# /etc/swift/swift.conf if it exists. If swift.conf doesn't exist,
++# then limit test coverage. This allows SAIO tests to work fine but
++# requires remote funtional testing to know something about the cluster
++# that is being tested.
+ config = get_config()
++for k in default_constraints:
++    if k in config:
++        # prefer what's in test.conf
++        config[k] = int(config[k])
++    elif conf_exists:
++        # swift.conf exists, so use what's defined there (or swift defaults)
++        # This normally happens when the test is running locally to the cluster
++        # as in a SAIO.
++        config[k] = default_constraints[k]
++    else:
++        # .functests don't know what the constraints of the tested cluster are,
++        # so the tests can't reliably pass or fail. Therefore, skip those
++        # tests.
++        config[k] = '%s constraint is not defined' % k
++
++def load_constraint(name):
++    c = config[name]
++    if not isinstance(c, int):
++        raise SkipTest(c)
++    return c
+ 
+ locale.setlocale(locale.LC_COLLATE, config.get('collate', 'C'))
+ 
+@@ -233,7 +276,7 @@ class TestAccount(Base):
+                     'application/xml; charset=utf-8')
+ 
+     def testListingLimit(self):
+-        limit = 10000
++        limit = load_constraint('account_listing_limit')
+ 
+         for l in (1, 100, limit/2, limit-1, limit, limit+1, limit*2):
+             p = {'limit':l}
+@@ -361,7 +404,7 @@ class TestContainer(Base):
+     set_up = False
+ 
+     def testContainerNameLimit(self):
+-        limit = 256
++        limit = load_constraint('max_container_name_length')
+ 
+         for l in (limit-100, limit-10, limit-1, limit,
+             limit+1, limit+10, limit+100):
+@@ -406,6 +449,7 @@ class TestContainer(Base):
+             self.assert_(cont.files(parms={'prefix': f}) == [f])
+ 
+     def testPrefixAndLimit(self):
++        load_constraint('container_listing_limit')
+         cont = self.env.account.container(Utils.create_name())
+         self.assert_(cont.create())
+ 
+@@ -949,7 +993,7 @@ class TestFile(Base):
+             self.assert_status(404)
+ 
+     def testNameLimit(self):
+-        limit = 1024
++        limit = load_constraint('max_object_name_length')
+ 
+         for l in (1, 10, limit/2, limit-1, limit, limit+1, limit*2):
+             file = self.env.container.file('a'*l)
+@@ -997,13 +1041,12 @@ class TestFile(Base):
+         self.assert_status(400)
+ 
+     def testMetadataNumberLimit(self):
+-        number_limit = 90
++        number_limit = load_constraint('max_meta_count')
++        size_limit = load_constraint('max_meta_overall_size')
+ 
+         for i in (number_limit-10, number_limit-1, number_limit,
+             number_limit+1, number_limit+10, number_limit+100):
+ 
+-            size_limit = 4096
+-
+             j = size_limit/(i * 2)
+ 
+             size = 0
+@@ -1093,7 +1136,7 @@ class TestFile(Base):
+             self.assert_(file.read(hdrs={'Range': r}) == data[0:1000])
+ 
+     def testFileSizeLimit(self):
+-        limit = 5*2**30 + 2
++        limit = load_constraint('max_file_size')
+         tsecs = 3
+ 
+         for i in (limit-100, limit-10, limit-1, limit, limit+1, limit+10,
+@@ -1147,7 +1190,8 @@ class TestFile(Base):
+         self.assert_status(200)
+ 
+     def testMetadataLengthLimits(self):
+-        key_limit, value_limit = 128, 256
++        key_limit = load_constraint('max_meta_name_length')
++        value_limit = load_constraint('max_meta_value_length')
+         lengths = [[key_limit, value_limit], [key_limit, value_limit+1], \
+             [key_limit+1, value_limit], [key_limit, 0], \
+             [key_limit, value_limit*10], [key_limit*10, value_limit]] 
+diff --git a/test/unit/common/test_constraints.py b/test/unit/common/test_constraints.py
+index 478b2a8..4b0c997 100644
+--- a/test/unit/common/test_constraints.py
++++ b/test/unit/common/test_constraints.py
+@@ -84,8 +84,13 @@ class TestConstraints(unittest.TestCase):
+             x += 1
+         self.assertEquals(constraints.check_metadata(Request.blank('/',
+             headers=headers), 'object'), None)
+-        headers['X-Object-Meta-9999%s' %
+-                ('a' * (constraints.MAX_META_NAME_LENGTH - 4))] = \
++        # add two more headers in case adding just one falls exactly on the
++        # limit (eg one header adds 1024 and the limit is 2048)
++        headers['X-Object-Meta-%04d%s' %
++                (x, 'a' * (constraints.MAX_META_NAME_LENGTH - 4))] = \
++                    'v' * constraints.MAX_META_VALUE_LENGTH
++        headers['X-Object-Meta-%04d%s' %
++                (x + 1, 'a' * (constraints.MAX_META_NAME_LENGTH - 4))] = \
+                     'v' * constraints.MAX_META_VALUE_LENGTH
+         self.assert_(isinstance(constraints.check_metadata(Request.blank('/',
+             headers=headers), 'object'), HTTPBadRequest))
+diff --git a/test/unit/obj/test_server.py b/test/unit/obj/test_server.py
+index 075700e..5160830 100644
+--- a/test/unit/obj/test_server.py
++++ b/test/unit/obj/test_server.py
+@@ -38,6 +38,7 @@ from swift.common import utils
+ from swift.common.utils import hash_path, mkdirs, normalize_timestamp, \
+                                NullLogger, storage_directory
+ from swift.common.exceptions import DiskFileNotExist
++from swift.common import constraints
+ from swift.obj import replicator
+ from eventlet import tpool
+ 
+@@ -1355,7 +1356,9 @@ class TestObjectController(unittest.TestCase):
+ 
+     def test_max_object_name_length(self):
+         timestamp = normalize_timestamp(time())
+-        req = Request.blank('/sda1/p/a/c/' + ('1' * 1024),
++        max_name_len = constraints.MAX_OBJECT_NAME_LENGTH
++        req = Request.blank('/sda1/p/a/c/' + ('1' * max_name_len),
++
+                 environ={'REQUEST_METHOD': 'PUT'},
+                 headers={'X-Timestamp': timestamp,
+                          'Content-Length': '4',
+@@ -1363,7 +1366,7 @@ class TestObjectController(unittest.TestCase):
+         req.body = 'DATA'
+         resp = self.object_controller.PUT(req)
+         self.assertEquals(resp.status_int, 201)
+-        req = Request.blank('/sda1/p/a/c/' + ('2' * 1025),
++        req = Request.blank('/sda1/p/a/c/' + ('2' * (max_name_len + 1)),
+                 environ={'REQUEST_METHOD': 'PUT'},
+                 headers={'X-Timestamp': timestamp,
+                          'Content-Length': '4',
+diff --git a/test/unit/proxy/test_server.py b/test/unit/proxy/test_server.py
+index 364370e..d28f604 100644
+--- a/test/unit/proxy/test_server.py
++++ b/test/unit/proxy/test_server.py
+@@ -45,7 +45,8 @@ from swift.container import server as container_server
+ from swift.obj import server as object_server
+ from swift.common import ring
+ from swift.common.constraints import MAX_META_NAME_LENGTH, \
+-    MAX_META_VALUE_LENGTH, MAX_META_COUNT, MAX_META_OVERALL_SIZE, MAX_FILE_SIZE
++    MAX_META_VALUE_LENGTH, MAX_META_COUNT, MAX_META_OVERALL_SIZE, \
++    MAX_FILE_SIZE, MAX_ACCOUNT_NAME_LENGTH, MAX_CONTAINER_NAME_LENGTH
+ from swift.common.utils import mkdirs, normalize_timestamp, NullLogger
+ from swift.common.wsgi import monkey_patch_mimetools
+ 
+@@ -1168,6 +1169,7 @@ class TestObjectController(unittest.TestCase):
+ 
+     def test_POST_meta_val_len(self):
+         with save_globals():
++            limit = MAX_META_VALUE_LENGTH
+             self.app.object_post_as_copy = False
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
+@@ -1175,42 +1177,44 @@ class TestObjectController(unittest.TestCase):
+                 fake_http_connect(200, 200, 202, 202, 202)
+                 #                 acct cont obj  obj  obj
+             req = Request.blank('/a/c/o', {}, headers={
+-                                            'Content-Type': 'foo/bar',
+-                                            'X-Object-Meta-Foo': 'x' * 256})
++                                'Content-Type': 'foo/bar',
++                                'X-Object-Meta-Foo': 'x' * limit})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 202)
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers={
+-                                            'Content-Type': 'foo/bar',
+-                                            'X-Object-Meta-Foo': 'x' * 257})
++                                'Content-Type': 'foo/bar',
++                                'X-Object-Meta-Foo': 'x' * (limit + 1)})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 400)
+ 
+     def test_POST_as_copy_meta_val_len(self):
+         with save_globals():
++            limit = MAX_META_VALUE_LENGTH
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
+             proxy_server.http_connect = \
+                 fake_http_connect(200, 200, 200, 200, 200, 202, 202, 202)
+                 #                 acct cont objc objc objc obj  obj  obj
+             req = Request.blank('/a/c/o', {}, headers={
+-                                            'Content-Type': 'foo/bar',
+-                                            'X-Object-Meta-Foo': 'x' * 256})
++                                'Content-Type': 'foo/bar',
++                                'X-Object-Meta-Foo': 'x' * limit})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 202)
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers={
+-                                            'Content-Type': 'foo/bar',
+-                                            'X-Object-Meta-Foo': 'x' * 257})
++                                'Content-Type': 'foo/bar',
++                                'X-Object-Meta-Foo': 'x' * (limit + 1)})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 400)
+ 
+     def test_POST_meta_key_len(self):
+         with save_globals():
++            limit = MAX_META_NAME_LENGTH
+             self.app.object_post_as_copy = False
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
+@@ -1219,20 +1223,21 @@ class TestObjectController(unittest.TestCase):
+                 #                 acct cont obj  obj  obj
+             req = Request.blank('/a/c/o', {}, headers={
+                 'Content-Type': 'foo/bar',
+-                ('X-Object-Meta-' + 'x' * 128): 'x'})
++                ('X-Object-Meta-' + 'x' * limit): 'x'})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 202)
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers={
+                 'Content-Type': 'foo/bar',
+-                ('X-Object-Meta-' + 'x' * 129): 'x'})
++                ('X-Object-Meta-' + 'x' * (limit + 1)): 'x'})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 400)
+ 
+     def test_POST_as_copy_meta_key_len(self):
+         with save_globals():
++            limit = MAX_META_NAME_LENGTH
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
+             proxy_server.http_connect = \
+@@ -1240,24 +1245,25 @@ class TestObjectController(unittest.TestCase):
+                 #                 acct cont objc objc objc obj  obj  obj
+             req = Request.blank('/a/c/o', {}, headers={
+                 'Content-Type': 'foo/bar',
+-                ('X-Object-Meta-' + 'x' * 128): 'x'})
++                ('X-Object-Meta-' + 'x' * limit): 'x'})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 202)
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers={
+                 'Content-Type': 'foo/bar',
+-                ('X-Object-Meta-' + 'x' * 129): 'x'})
++                ('X-Object-Meta-' + 'x' * (limit + 1)): 'x'})
+             self.app.update_request(req)
+             res = controller.POST(req)
+             self.assertEquals(res.status_int, 400)
+ 
+     def test_POST_meta_count(self):
+         with save_globals():
++            limit = MAX_META_COUNT
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
+             headers = dict(
+-                (('X-Object-Meta-' + str(i), 'a') for i in xrange(91)))
++                (('X-Object-Meta-' + str(i), 'a') for i in xrange(limit + 1)))
+             headers.update({'Content-Type': 'foo/bar'})
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers=headers)
+@@ -1267,10 +1273,13 @@ class TestObjectController(unittest.TestCase):
+ 
+     def test_POST_meta_size(self):
+         with save_globals():
++            limit = MAX_META_OVERALL_SIZE
+             controller = proxy_server.ObjectController(self.app, 'account',
+                 'container', 'object')
++            count = limit / 256  # enough to cause the limit to be reched
+             headers = dict(
+-                (('X-Object-Meta-' + str(i), 'a' * 256) for i in xrange(1000)))
++                (('X-Object-Meta-' + str(i), 'a' * 256)
++                    for i in xrange(count + 1)))
+             headers.update({'Content-Type': 'foo/bar'})
+             proxy_server.http_connect = fake_http_connect(202, 202, 202)
+             req = Request.blank('/a/c/o', {}, headers=headers)
+@@ -3206,13 +3215,14 @@ class TestContainerController(unittest.TestCase):
+ 
+     def test_PUT_max_container_name_length(self):
+         with save_globals():
++            limit = MAX_CONTAINER_NAME_LENGTH
+             controller = proxy_server.ContainerController(self.app, 'account',
+-                                                              '1' * 256)
++                                                          '1' * limit)
+             self.assert_status_map(controller.PUT,
+                                    (200, 200, 200, 201, 201, 201), 201,
+                                    missing_container=True)
+             controller = proxy_server.ContainerController(self.app, 'account',
+-                                                              '2' * 257)
++                                                          '2' * (limit + 1))
+             self.assert_status_map(controller.PUT, (201, 201, 201), 400,
+                                    missing_container=True)
+ 
+@@ -3813,9 +3823,11 @@ class TestAccountController(unittest.TestCase):
+     def test_PUT_max_account_name_length(self):
+         with save_globals():
+             self.app.allow_account_management = True
+-            controller = proxy_server.AccountController(self.app, '1' * 256)
++            limit = MAX_ACCOUNT_NAME_LENGTH
++            controller = proxy_server.AccountController(self.app, '1' * limit)
+             self.assert_status_map(controller.PUT, (201, 201, 201), 201)
+-            controller = proxy_server.AccountController(self.app, '2' * 257)
++            controller = proxy_server.AccountController(
++                self.app, '2' * (limit + 1))
+             self.assert_status_map(controller.PUT, (201, 201, 201), 400)
+ 
+     def test_PUT_connect_exceptions(self):
+-- 
+1.7.11.7
+

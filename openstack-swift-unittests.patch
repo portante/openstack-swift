@@ -1,0 +1,33 @@
+From 14dffe66b774eaaf6f35fe0a9ce3152b7886d205 Mon Sep 17 00:00:00 2001
+From: Peter Portante <peter.portante@redhat.com>
+Date: Tue, 16 Oct 2012 12:07:50 -0400
+Subject: [PATCH 3/5] Backport unit test fix for AppIterRange.pop reference
+
+See f26d2e5f99ff402910407165ae228025991151b9 (https://github.com/openstack/swift/commit/f26d2e5f99ff402910407165ae228025991151b9)
+
+Fixes the error from the unit tests:
+  "AttributeError: 'AppIterRange' object has no attribute 'pop'"
+
+Signed-off-by: Peter Portante <peter.portante@redhat.com>
+---
+ test/unit/common/middleware/test_swift3.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/test/unit/common/middleware/test_swift3.py b/test/unit/common/middleware/test_swift3.py
+index 97ffd4d..46940d8 100644
+--- a/test/unit/common/middleware/test_swift3.py
++++ b/test/unit/common/middleware/test_swift3.py
+@@ -147,8 +147,8 @@ class FakeAppObject(FakeApp):
+                 if 'HTTP_RANGE' in env:
+                     resp = Response(body=self.object_body,
+                                     conditional_response=True)
+-                    iter = resp(env, start_response)
+-                    return iter.pop()
++                    resp_iter = iter(resp(env, start_response))
++                    return resp_iter.next()
+                 start_response(Response().status)
+                 start_response(self.response_headers)
+                 if env['REQUEST_METHOD'] == 'GET':
+-- 
+1.7.11.7
+

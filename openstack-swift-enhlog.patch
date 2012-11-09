@@ -1,0 +1,758 @@
+From 7b512bc1ddbdda2dca4cddeaa6ef9c9b1e667585 Mon Sep 17 00:00:00 2001
+From: Peter Portante <peter.portante@redhat.com>
+Date: Tue, 16 Oct 2012 13:48:15 -0400
+Subject: [PATCH 4/5] Enhance internal logged messages to report referer and
+ user-agent.
+
+This is a backport of 6e3fd97d832671678ed48df86036f2979b11f515,
+https://github.com/portante/swift/commit/6e3fd97d832671678ed48df86036f2979b11f515.
+
+Pass the referering URL between internal servers, and set the user-agent to be
+the server type (obj-server, container-server) with the process PID. In
+conjunction with the transaction ID, it helps to track down which PID from a
+given system was responsible for initiating the request and what that server
+was working on to make this request.
+
+This has been helpful in tracking down interactions between object, container
+and account servers once the proxy server has forwarded the request.
+
+Signed-off-by: Peter Portante <peter.portante@redhat.com>
+---
+ swift/container/server.py      |  4 +-
+ swift/obj/server.py            | 23 ++++++-----
+ swift/proxy/server.py          | 90 +++++++++++++++++++-----------------------
+ test/unit/obj/test_server.py   | 39 +++++++++---------
+ test/unit/proxy/test_server.py | 49 +++++++++++++----------
+ 5 files changed, 107 insertions(+), 98 deletions(-)
+
+diff --git a/swift/container/server.py b/swift/container/server.py
+index 8a18cfd..e8e7126 100644
+--- a/swift/container/server.py
++++ b/swift/container/server.py
+@@ -101,7 +101,9 @@ class ContainerController(object):
+                 'x-delete-timestamp': info['delete_timestamp'],
+                 'x-object-count': info['object_count'],
+                 'x-bytes-used': info['bytes_used'],
+-                'x-trans-id': req.headers.get('x-trans-id', '-')}
++                'x-trans-id': req.headers.get('x-trans-id', '-'),
++                'user-agent': 'container-server %s' % os.getpid(),
++                'referer': req.url}
+             if req.headers.get('x-account-override-deleted', 'no').lower() == \
+                     'yes':
+                 account_headers['x-account-override-deleted'] = 'yes'
+diff --git a/swift/obj/server.py b/swift/obj/server.py
+index 9cca16b..b62712c 100644
+--- a/swift/obj/server.py
++++ b/swift/obj/server.py
+@@ -394,6 +394,7 @@ class ObjectController(object):
+                             request
+         :param objdevice: device name that the object is in
+         """
++        headers_out['user-agent'] = 'obj-server %s' % os.getpid()
+         full_path = '/%s/%s/%s' % (account, container, obj)
+         if all([host, partition, contdevice]):
+             try:
+@@ -444,11 +445,12 @@ class ObjectController(object):
+         contdevice = headers_in.get('X-Container-Device', None)
+         if not all([host, partition, contdevice]):
+             return
++        headers_out['x-trans-id'] = headers_in.get('x-trans-id', '-')
+         self.async_update(op, account, container, obj, host, partition,
+                           contdevice, headers_out, objdevice)
+ 
+     def delete_at_update(self, op, delete_at, account, container, obj,
+-                         headers_in, objdevice):
++                         headers_in, objdevice, referer):
+         """
+         Update the expiring objects container when objects are updated.
+ 
+@@ -461,7 +463,8 @@ class ObjectController(object):
+         """
+         host = partition = contdevice = None
+         headers_out = {'x-timestamp': headers_in['x-timestamp'],
+-                       'x-trans-id': headers_in.get('x-trans-id', '-')}
++                       'x-trans-id': headers_in.get('x-trans-id', '-'),
++                       'referer': referer,}
+         if op != 'DELETE':
+             host = headers_in.get('X-Delete-At-Host', None)
+             partition = headers_in.get('X-Delete-At-Partition', None)
+@@ -519,10 +522,11 @@ class ObjectController(object):
+         if old_delete_at != new_delete_at:
+             if new_delete_at:
+                 self.delete_at_update('PUT', new_delete_at, account, container,
+-                                      obj, request.headers, device)
++                                      obj, request.headers, device, request.url)
+             if old_delete_at:
+                 self.delete_at_update('DELETE', old_delete_at, account,
+-                                      container, obj, request.headers, device)
++                                      container, obj, request.headers, device,
++                                      request.url)
+         with file.mkstemp() as (fd, tmppath):
+             file.put(fd, tmppath, metadata, extension='.meta')
+         return response_class(request=request)
+@@ -597,10 +601,10 @@ class ObjectController(object):
+             if old_delete_at != new_delete_at:
+                 if new_delete_at:
+                     self.delete_at_update('PUT', new_delete_at, account,
+-                        container, obj, request.headers, device)
++                        container, obj, request.headers, device, request.url)
+                 if old_delete_at:
+                     self.delete_at_update('DELETE', old_delete_at, account,
+-                        container, obj, request.headers, device)
++                        container, obj, request.headers, device, request.url)
+             file.put(fd, tmppath, metadata)
+         file.unlinkold(metadata['X-Timestamp'])
+         if not orig_timestamp or \
+@@ -611,7 +615,7 @@ class ObjectController(object):
+                  'x-content-type': file.metadata['Content-Type'],
+                  'x-timestamp': file.metadata['X-Timestamp'],
+                  'x-etag': file.metadata['ETag'],
+-                 'x-trans-id': request.headers.get('x-trans-id', '-')},
++                 'referer': request.url,},
+                 device)
+         resp = HTTPCreated(request=request, etag=etag)
+         return resp
+@@ -761,14 +765,15 @@ class ObjectController(object):
+             old_delete_at = int(file.metadata.get('X-Delete-At') or 0)
+             if old_delete_at:
+                 self.delete_at_update('DELETE', old_delete_at, account,
+-                                      container, obj, request.headers, device)
++                                      container, obj, request.headers, device,
++                                      request.url)
+             file.put(fd, tmppath, metadata, extension='.ts')
+         file.unlinkold(metadata['X-Timestamp'])
+         if not orig_timestamp or \
+                 orig_timestamp < request.headers['x-timestamp']:
+             self.container_update('DELETE', account, container, obj,
+                 request.headers, {'x-timestamp': metadata['X-Timestamp'],
+-                'x-trans-id': request.headers.get('x-trans-id', '-')},
++                'referer': request.url,},
+                 device)
+         resp = response_class(request=request)
+         return resp
+diff --git a/swift/proxy/server.py b/swift/proxy/server.py
+index 17613b8..de3f879 100644
+--- a/swift/proxy/server.py
++++ b/swift/proxy/server.py
+@@ -318,6 +318,16 @@ class Controller(object):
+                            if k.lower() in self.pass_through_headers or
+                               k.lower().startswith(x_meta))
+ 
++    def generate_request_headers(self, orig_req, additional=None):
++        headers = {'x-trans-id' : self.trans_id,
++                   'X-Timestamp': normalize_timestamp(time.time()),
++                   'Connection' : 'close',
++                   'user-agent' : 'proxy-server %s' % os.getpid(),
++                   'referer'    : orig_req.url}
++        if additional:
++            headers.update(additional)
++        return headers
++
+     def error_increment(self, node):
+         """
+         Handles incrementing error counts when talking to nodes.
+@@ -383,7 +393,7 @@ class Controller(object):
+         node['errors'] = self.app.error_suppression_limit + 1
+         node['last_error'] = time.time()
+ 
+-    def account_info(self, account, autocreate=False):
++    def account_info(self, account, req, autocreate=False):
+         """
+         Get account information, and also verify that the account exists.
+ 
+@@ -410,7 +420,7 @@ class Controller(object):
+         container_count = 0
+         attempts_left = self.app.account_ring.replica_count
+         path = '/%s' % account
+-        headers = {'x-trans-id': self.trans_id, 'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         for node in self.iter_nodes(partition, nodes, self.app.account_ring):
+             try:
+                 with ConnectionTimeout(self.app.conn_timeout):
+@@ -443,9 +453,7 @@ class Controller(object):
+         if result_code == 404 and autocreate:
+             if len(account) > MAX_ACCOUNT_NAME_LENGTH:
+                 return None, None, None
+-            headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                       'X-Trans-Id': self.trans_id,
+-                       'Connection': 'close'}
++            headers = self.generate_request_headers(req)
+             resp = self.make_requests(Request.blank('/v1' + path),
+                 self.app.account_ring, partition, 'PUT',
+                 path, [headers] * len(nodes))
+@@ -464,7 +472,7 @@ class Controller(object):
+             return partition, nodes, container_count
+         return None, None, None
+ 
+-    def container_info(self, account, container, account_autocreate=False):
++    def container_info(self, account, container, req, account_autocreate=False):
+         """
+         Get container information and thusly verify container existance.
+         This will also make a call to account_info to verify that the
+@@ -491,7 +499,7 @@ class Controller(object):
+                     return partition, nodes, read_acl, write_acl, sync_key
+                 elif status == 404:
+                     return None, None, None, None, None
+-        if not self.account_info(account, autocreate=account_autocreate)[1]:
++        if not self.account_info(account, req, autocreate=account_autocreate)[1]:
+             return None, None, None, None, None
+         result_code = 0
+         read_acl = None
+@@ -499,7 +507,7 @@ class Controller(object):
+         sync_key = None
+         container_size = None
+         attempts_left = self.app.container_ring.replica_count
+-        headers = {'x-trans-id': self.trans_id, 'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         for node in self.iter_nodes(partition, nodes, self.app.container_ring):
+             try:
+                 with ConnectionTimeout(self.app.conn_timeout):
+@@ -762,8 +770,7 @@ class Controller(object):
+                 continue
+             try:
+                 with ConnectionTimeout(self.app.conn_timeout):
+-                    headers = dict(req.headers)
+-                    headers['Connection'] = 'close'
++                    headers = self.generate_request_headers(req, dict(req.headers))
+                     conn = http_connect(node['ip'], node['port'],
+                         node['device'], partition, req.method, path,
+                         headers=headers,
+@@ -864,7 +871,7 @@ class ObjectController(Controller):
+         """Handle HTTP GET or HEAD requests."""
+         if 'swift.authorize' in req.environ:
+             req.acl = \
+-                self.container_info(self.account_name, self.container_name)[2]
++                self.container_info(self.account_name, self.container_name, req)[2]
+             aresp = req.environ['swift.authorize'](req)
+             if aresp:
+                 return aresp
+@@ -1042,7 +1049,7 @@ class ObjectController(Controller):
+             if error_response:
+                 return error_response
+             container_partition, containers, _junk, req.acl, _junk = \
+-                self.container_info(self.account_name, self.container_name,
++                self.container_info(self.account_name, self.container_name, req,
+                     account_autocreate=self.app.account_autocreate)
+             if 'swift.authorize' in req.environ:
+                 aresp = req.environ['swift.authorize'](req)
+@@ -1073,8 +1080,7 @@ class ObjectController(Controller):
+             req.headers['X-Timestamp'] = normalize_timestamp(time.time())
+             headers = []
+             for container in containers:
+-                nheaders = dict(req.headers.iteritems())
+-                nheaders['Connection'] = 'close'
++                nheaders = self.generate_request_headers(req, dict(req.headers.iteritems()))
+                 nheaders['X-Container-Host'] = '%(ip)s:%(port)s' % container
+                 nheaders['X-Container-Partition'] = container_partition
+                 nheaders['X-Container-Device'] = container['device']
+@@ -1125,7 +1131,7 @@ class ObjectController(Controller):
+         """HTTP PUT request handler."""
+         (container_partition, containers, _junk, req.acl,
+          req.environ['swift_sync_key']) = \
+-            self.container_info(self.account_name, self.container_name,
++            self.container_info(self.account_name, self.container_name, req,
+                 account_autocreate=self.app.account_autocreate)
+         if 'swift.authorize' in req.environ:
+             aresp = req.environ['swift.authorize'](req)
+@@ -1248,8 +1254,7 @@ class ObjectController(Controller):
+         node_iter = self.iter_nodes(partition, nodes, self.app.object_ring)
+         pile = GreenPile(len(nodes))
+         for container in containers:
+-            nheaders = dict(req.headers.iteritems())
+-            nheaders['Connection'] = 'close'
++            nheaders = self.generate_request_headers(req, dict(req.headers.iteritems()))
+             nheaders['X-Container-Host'] = '%(ip)s:%(port)s' % container
+             nheaders['X-Container-Partition'] = container_partition
+             nheaders['X-Container-Device'] = container['device']
+@@ -1368,7 +1373,7 @@ class ObjectController(Controller):
+         """HTTP DELETE request handler."""
+         (container_partition, containers, _junk, req.acl,
+          req.environ['swift_sync_key']) = \
+-            self.container_info(self.account_name, self.container_name)
++            self.container_info(self.account_name, self.container_name, req)
+         if 'swift.authorize' in req.environ:
+             aresp = req.environ['swift.authorize'](req)
+             if aresp:
+@@ -1390,8 +1395,7 @@ class ObjectController(Controller):
+             req.headers['X-Timestamp'] = normalize_timestamp(time.time())
+         headers = []
+         for container in containers:
+-            nheaders = dict(req.headers.iteritems())
+-            nheaders['Connection'] = 'close'
++            nheaders = self.generate_request_headers(req, dict(req.headers.iteritems()))
+             nheaders['X-Container-Host'] = '%(ip)s:%(port)s' % container
+             nheaders['X-Container-Partition'] = container_partition
+             nheaders['X-Container-Device'] = container['device']
+@@ -1456,7 +1460,7 @@ class ContainerController(Controller):
+ 
+     def GETorHEAD(self, req):
+         """Handler for HTTP GET/HEAD requests."""
+-        if not self.account_info(self.account_name)[1]:
++        if not self.account_info(self.account_name, req)[1]:
+             return HTTPNotFound(request=req)
+         part, nodes = self.app.container_ring.get_nodes(
+                         self.account_name, self.container_name)
+@@ -1513,7 +1517,7 @@ class ContainerController(Controller):
+                         (len(self.container_name), MAX_CONTAINER_NAME_LENGTH)
+             return resp
+         account_partition, accounts, container_count = \
+-            self.account_info(self.account_name,
++            self.account_info(self.account_name, req,
+                               autocreate=self.app.account_autocreate)
+         if self.app.max_containers_per_account > 0 and \
+                 container_count >= self.app.max_containers_per_account and \
+@@ -1528,12 +1532,10 @@ class ContainerController(Controller):
+             self.account_name, self.container_name)
+         headers = []
+         for account in accounts:
+-            nheaders = {'X-Timestamp': normalize_timestamp(time.time()),
+-                        'x-trans-id': self.trans_id,
+-                        'X-Account-Host': '%(ip)s:%(port)s' % account,
+-                        'X-Account-Partition': account_partition,
+-                        'X-Account-Device': account['device'],
+-                        'Connection': 'close'}
++            nheaders = self.generate_request_headers(req,
++                                                {'X-Account-Host': '%(ip)s:%(port)s' % account,
++                                                 'X-Account-Partition': account_partition,
++                                                 'X-Account-Device': account['device'],})
+             self.transfer_headers(req.headers, nheaders)
+             headers.append(nheaders)
+         if self.app.memcache:
+@@ -1551,15 +1553,13 @@ class ContainerController(Controller):
+         if error_response:
+             return error_response
+         account_partition, accounts, container_count = \
+-            self.account_info(self.account_name,
++            self.account_info(self.account_name, req,
+                               autocreate=self.app.account_autocreate)
+         if not accounts:
+             return HTTPNotFound(request=req)
+         container_partition, containers = self.app.container_ring.get_nodes(
+             self.account_name, self.container_name)
+-        headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                   'x-trans-id': self.trans_id,
+-                   'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         self.transfer_headers(req.headers, headers)
+         if self.app.memcache:
+             cache_key = get_container_memcache_key(self.account_name,
+@@ -1573,19 +1573,17 @@ class ContainerController(Controller):
+     def DELETE(self, req):
+         """HTTP DELETE request handler."""
+         account_partition, accounts, container_count = \
+-            self.account_info(self.account_name)
++            self.account_info(self.account_name, req)
+         if not accounts:
+             return HTTPNotFound(request=req)
+         container_partition, containers = self.app.container_ring.get_nodes(
+             self.account_name, self.container_name)
+         headers = []
+         for account in accounts:
+-            headers.append({'X-Timestamp': normalize_timestamp(time.time()),
+-                           'X-Trans-Id': self.trans_id,
+-                           'X-Account-Host': '%(ip)s:%(port)s' % account,
++            additionals = {'X-Account-Host': '%(ip)s:%(port)s' % account,
+                            'X-Account-Partition': account_partition,
+-                           'X-Account-Device': account['device'],
+-                           'Connection': 'close'})
++                           'X-Account-Device': account['device'],}
++            headers.append(self.generate_request_headers(req, additionals))
+         if self.app.memcache:
+             cache_key = get_container_memcache_key(self.account_name,
+                                                    self.container_name)
+@@ -1617,9 +1615,7 @@ class AccountController(Controller):
+                 resp.body = 'Account name length of %d longer than %d' % \
+                             (len(self.account_name), MAX_ACCOUNT_NAME_LENGTH)
+                 return resp
+-            headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                       'X-Trans-Id': self.trans_id,
+-                       'Connection': 'close'}
++            headers = self.generate_request_headers(req)
+             resp = self.make_requests(
+                 Request.blank('/v1/' + self.account_name),
+                 self.app.account_ring, partition, 'PUT',
+@@ -1646,9 +1642,7 @@ class AccountController(Controller):
+             return resp
+         account_partition, accounts = \
+             self.app.account_ring.get_nodes(self.account_name)
+-        headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                   'x-trans-id': self.trans_id,
+-                   'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         self.transfer_headers(req.headers, headers)
+         if self.app.memcache:
+             self.app.memcache.delete('account%s' % req.path_info.rstrip('/'))
+@@ -1663,9 +1657,7 @@ class AccountController(Controller):
+             return error_response
+         account_partition, accounts = \
+             self.app.account_ring.get_nodes(self.account_name)
+-        headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                   'X-Trans-Id': self.trans_id,
+-                   'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         self.transfer_headers(req.headers, headers)
+         if self.app.memcache:
+             self.app.memcache.delete('account%s' % req.path_info.rstrip('/'))
+@@ -1694,9 +1686,7 @@ class AccountController(Controller):
+             return HTTPMethodNotAllowed(request=req)
+         account_partition, accounts = \
+             self.app.account_ring.get_nodes(self.account_name)
+-        headers = {'X-Timestamp': normalize_timestamp(time.time()),
+-                   'X-Trans-Id': self.trans_id,
+-                   'Connection': 'close'}
++        headers = self.generate_request_headers(req)
+         if self.app.memcache:
+             self.app.memcache.delete('account%s' % req.path_info.rstrip('/'))
+         return self.make_requests(req, self.app.account_ring,
+diff --git a/test/unit/obj/test_server.py b/test/unit/obj/test_server.py
+index 5160830..024c31c 100644
+--- a/test/unit/obj/test_server.py
++++ b/test/unit/obj/test_server.py
+@@ -1504,7 +1504,8 @@ class TestObjectController(unittest.TestCase):
+         finally:
+             object_server.http_connect = orig_http_connect
+         self.assertEquals(given_args, ['127.0.0.1', '1234', 'sdc1', 1, 'PUT',
+-            '/a/c/o', {'x-timestamp': '1', 'x-out': 'set'}])
++            '/a/c/o', {'x-timestamp': '1', 'x-out': 'set',
++                       'user-agent': 'obj-server %s' % os.getpid()}])
+ 
+     def test_async_update_saves_on_exception(self):
+ 
+@@ -1523,8 +1524,9 @@ class TestObjectController(unittest.TestCase):
+             pickle.load(open(os.path.join(self.testdir, 'sda1',
+                 'async_pending', 'a83',
+                 '06fbf0b514e5199dfc4e00f42eb5ea83-0000000001.00000'))),
+-            {'headers': {'x-timestamp': '1', 'x-out': 'set'}, 'account': 'a',
+-             'container': 'c', 'obj': 'o', 'op': 'PUT'})
++            {'headers': {'x-timestamp': '1', 'x-out': 'set',
++                         'user-agent': 'obj-server %s' % os.getpid()},
++             'account': 'a', 'container': 'c', 'obj': 'o', 'op': 'PUT'})
+ 
+     def test_async_update_saves_on_non_2xx(self):
+ 
+@@ -1554,7 +1556,8 @@ class TestObjectController(unittest.TestCase):
+                     pickle.load(open(os.path.join(self.testdir, 'sda1',
+                         'async_pending', 'a83',
+                         '06fbf0b514e5199dfc4e00f42eb5ea83-0000000001.00000'))),
+-                    {'headers': {'x-timestamp': '1', 'x-out': str(status)},
++                    {'headers': {'x-timestamp': '1', 'x-out': str(status),
++                                 'user-agent': 'obj-server %s' % os.getpid()},
+                      'account': 'a', 'container': 'c', 'obj': 'o',
+                      'op': 'PUT'})
+         finally:
+@@ -1599,12 +1602,12 @@ class TestObjectController(unittest.TestCase):
+ 
+         self.object_controller.async_update = fake_async_update
+         self.object_controller.delete_at_update('PUT', 2, 'a', 'c', 'o',
+-            {'x-timestamp': '1'}, 'sda1')
++            {'x-timestamp': '1'}, 'sda1', '/foo/bar')
+         self.assertEquals(given_args, ['PUT', '.expiring_objects', '0',
+             '2-a/c/o', None, None, None,
+             {'x-size': '0', 'x-etag': 'd41d8cd98f00b204e9800998ecf8427e',
+              'x-content-type': 'text/plain', 'x-timestamp': '1',
+-             'x-trans-id': '-'},
++             'x-trans-id': '-', 'referer': '/foo/bar'},
+             'sda1'])
+ 
+     def test_delete_at_update_put_with_info(self):
+@@ -1617,12 +1620,12 @@ class TestObjectController(unittest.TestCase):
+         self.object_controller.delete_at_update('PUT', 2, 'a', 'c', 'o',
+             {'x-timestamp': '1', 'X-Delete-At-Host': '127.0.0.1:1234',
+              'X-Delete-At-Partition': '3', 'X-Delete-At-Device': 'sdc1'},
+-            'sda1')
++            'sda1', '/foo/bar')
+         self.assertEquals(given_args, ['PUT', '.expiring_objects', '0',
+             '2-a/c/o', '127.0.0.1:1234', '3', 'sdc1',
+             {'x-size': '0', 'x-etag': 'd41d8cd98f00b204e9800998ecf8427e',
+              'x-content-type': 'text/plain', 'x-timestamp': '1',
+-             'x-trans-id': '-'},
++             'x-trans-id': '-', 'referer': '/foo/bar'},
+             'sda1'])
+ 
+     def test_delete_at_update_delete(self):
+@@ -1633,10 +1636,10 @@ class TestObjectController(unittest.TestCase):
+ 
+         self.object_controller.async_update = fake_async_update
+         self.object_controller.delete_at_update('DELETE', 2, 'a', 'c', 'o',
+-            {'x-timestamp': '1'}, 'sda1')
++            {'x-timestamp': '1'}, 'sda1', '/foo/bar')
+         self.assertEquals(given_args, ['DELETE', '.expiring_objects', '0',
+             '2-a/c/o', None, None, None,
+-            {'x-timestamp': '1', 'x-trans-id': '-'}, 'sda1'])
++            {'x-timestamp': '1', 'x-trans-id': '-', 'referer': '/foo/bar'}, 'sda1'])
+ 
+     def test_POST_calls_delete_at(self):
+         given_args = []
+@@ -1680,7 +1683,7 @@ class TestObjectController(unittest.TestCase):
+              'Content-Type': 'application/x-test',
+              'X-Timestamp': timestamp1,
+              'Host': 'localhost:80'},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+         while given_args:
+             given_args.pop()
+@@ -1700,7 +1703,7 @@ class TestObjectController(unittest.TestCase):
+             {'X-Delete-At': delete_at_timestamp2,
+              'Content-Type': 'application/x-test',
+              'X-Timestamp': timestamp2, 'Host': 'localhost:80'},
+-            'sda1',
++            'sda1', 'http://localhost/sda1/p/a/c/o',
+             'DELETE', int(delete_at_timestamp1), 'a', 'c', 'o',
+             # This 2 timestamp is okay because it's ignored since it's just
+             # part of the current request headers. The above 1 timestamp is the
+@@ -1708,7 +1711,7 @@ class TestObjectController(unittest.TestCase):
+             {'X-Delete-At': delete_at_timestamp2,
+              'Content-Type': 'application/x-test',
+              'X-Timestamp': timestamp2, 'Host': 'localhost:80'},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+     def test_PUT_calls_delete_at(self):
+         given_args = []
+@@ -1745,7 +1748,7 @@ class TestObjectController(unittest.TestCase):
+              'Content-Type': 'application/octet-stream',
+              'X-Timestamp': timestamp1,
+              'Host': 'localhost:80'},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+         while given_args:
+             given_args.pop()
+@@ -1768,7 +1771,7 @@ class TestObjectController(unittest.TestCase):
+              'Content-Length': '4',
+              'Content-Type': 'application/octet-stream',
+              'X-Timestamp': timestamp2, 'Host': 'localhost:80'},
+-            'sda1',
++            'sda1', 'http://localhost/sda1/p/a/c/o',
+             'DELETE', int(delete_at_timestamp1), 'a', 'c', 'o',
+             # This 2 timestamp is okay because it's ignored since it's just
+             # part of the current request headers. The above 1 timestamp is the
+@@ -1777,7 +1780,7 @@ class TestObjectController(unittest.TestCase):
+              'Content-Length': '4',
+              'Content-Type': 'application/octet-stream',
+              'X-Timestamp': timestamp2, 'Host': 'localhost:80'},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+     def test_GET_but_expired(self):
+         test_time = time() + 10000
+@@ -2003,7 +2006,7 @@ class TestObjectController(unittest.TestCase):
+              'Content-Type': 'application/octet-stream',
+              'X-Timestamp': timestamp1,
+              'Host': 'localhost:80'},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+         while given_args:
+             given_args.pop()
+@@ -2020,7 +2023,7 @@ class TestObjectController(unittest.TestCase):
+             'DELETE', int(delete_at_timestamp1), 'a', 'c', 'o',
+             {'Content-Type': 'application/octet-stream',
+              'Host': 'localhost:80', 'X-Timestamp': timestamp2},
+-            'sda1'])
++            'sda1', 'http://localhost/sda1/p/a/c/o'])
+ 
+     def test_PUT_delete_at_in_past(self):
+         req = Request.blank('/sda1/p/a/c/o', environ={'REQUEST_METHOD': 'PUT'},
+diff --git a/test/unit/proxy/test_server.py b/test/unit/proxy/test_server.py
+index d28f604..876c7b2 100644
+--- a/test/unit/proxy/test_server.py
++++ b/test/unit/proxy/test_server.py
+@@ -324,6 +324,10 @@ def save_globals():
+         proxy_server.Controller.account_info = orig_account_info
+ 
+ 
++class FakeReq(object):
++    def __init__(self):
++        self.url = "http://fake.domain/fake/really/fake"
++
+ # tests
+ class TestController(unittest.TestCase):
+ 
+@@ -331,6 +335,7 @@ class TestController(unittest.TestCase):
+         self.account_ring = FakeRing()
+         self.container_ring = FakeRing()
+         self.memcache = FakeMemcache()
++        self.req = FakeReq()
+ 
+         app = proxy_server.Application(None, self.memcache,
+             account_ring=self.account_ring,
+@@ -355,7 +360,7 @@ class TestController(unittest.TestCase):
+         with save_globals():
+             proxy_server.http_connect = fake_http_connect(200)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             proxy_server.http_connect = fake_http_connect(201,
+                                             raise_timeout_exc=True)
+             self.controller._make_request(nodes, partition, 'POST',
+@@ -366,7 +371,7 @@ class TestController(unittest.TestCase):
+         with save_globals():
+             proxy_server.http_connect = fake_http_connect(200)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.check_account_info_return(partition, nodes)
+             self.assertEquals(count, 12345)
+ 
+@@ -376,7 +381,7 @@ class TestController(unittest.TestCase):
+ 
+             proxy_server.http_connect = fake_http_connect()
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.check_account_info_return(partition, nodes)
+             self.assertEquals(count, 12345)
+ 
+@@ -385,7 +390,7 @@ class TestController(unittest.TestCase):
+         with save_globals():
+             proxy_server.http_connect = fake_http_connect(404, 404, 404)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.check_account_info_return(partition, nodes, True)
+             self.assertEquals(count, None)
+ 
+@@ -395,7 +400,7 @@ class TestController(unittest.TestCase):
+ 
+             proxy_server.http_connect = fake_http_connect()
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.check_account_info_return(partition, nodes, True)
+             self.assertEquals(count, None)
+ 
+@@ -404,7 +409,7 @@ class TestController(unittest.TestCase):
+         def test(*status_list):
+             proxy_server.http_connect = fake_http_connect(*status_list)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.assertEqual(len(self.memcache.keys()), 0)
+             self.check_account_info_return(partition, nodes, True)
+             self.assertEquals(count, None)
+@@ -421,7 +426,8 @@ class TestController(unittest.TestCase):
+             proxy_server.http_connect = \
+                 fake_http_connect(404, 404, 404, 201, 201, 201)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account, autocreate=False)
++                self.controller.account_info(self.account, self.req,
++                                             autocreate=False)
+             self.check_account_info_return(partition, nodes, is_none=True)
+             self.assertEquals(count, None)
+ 
+@@ -429,7 +435,7 @@ class TestController(unittest.TestCase):
+             proxy_server.http_connect = \
+                 fake_http_connect(404, 404, 404, 201, 201, 201)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account)
++                self.controller.account_info(self.account, self.req)
+             self.check_account_info_return(partition, nodes, is_none=True)
+             self.assertEquals(count, None)
+ 
+@@ -437,7 +443,8 @@ class TestController(unittest.TestCase):
+             proxy_server.http_connect = \
+                 fake_http_connect(404, 404, 404, 201, 201, 201)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account, autocreate=True)
++                self.controller.account_info(self.account, self.req,
++                                             autocreate=True)
+             self.check_account_info_return(partition, nodes)
+             self.assertEquals(count, 0)
+ 
+@@ -445,7 +452,8 @@ class TestController(unittest.TestCase):
+             proxy_server.http_connect = \
+                 fake_http_connect(404, 404, 404, 503, 201, 201)
+             partition, nodes, count = \
+-                self.controller.account_info(self.account, autocreate=True)
++                self.controller.account_info(self.account, self.req,
++                                             autocreate=True)
+             self.check_account_info_return(partition, nodes)
+             self.assertEquals(count, 0)
+ 
+@@ -455,7 +463,8 @@ class TestController(unittest.TestCase):
+             exc = None
+             try:
+                 partition, nodes, count = \
+-                    self.controller.account_info(self.account, autocreate=True)
++                    self.controller.account_info(self.account, self.req,
++                                                 autocreate=True)
+             except Exception, err:
+                 exc = err
+             self.assertEquals(str(exc),
+@@ -474,18 +483,18 @@ class TestController(unittest.TestCase):
+         self.assertEqual(write_acl, ret[3])
+ 
+     def test_container_info_invalid_account(self):
+-        def account_info(self, account, autocreate=False):
++        def account_info(self, account, req, autocreate=False):
+             return None, None
+ 
+         with save_globals():
+             proxy_server.Controller.account_info = account_info
+             ret = self.controller.container_info(self.account,
+-                self.container)
++                self.container, self.req)
+             self.check_container_info_return(ret, True)
+ 
+     # tests if 200 is cached and used
+     def test_container_info_200(self):
+-        def account_info(self, account, autocreate=False):
++        def account_info(self, account, req, autocreate=False):
+             return True, True, 0
+ 
+         with save_globals():
+@@ -495,7 +504,7 @@ class TestController(unittest.TestCase):
+             proxy_server.http_connect = fake_http_connect(200,
+                 headers=headers)
+             ret = self.controller.container_info(self.account,
+-                self.container)
++                self.container, self.req)
+             self.check_container_info_return(ret)
+ 
+             cache_key = proxy_server.get_container_memcache_key(self.account,
+@@ -506,19 +515,19 @@ class TestController(unittest.TestCase):
+ 
+             proxy_server.http_connect = fake_http_connect()
+             ret = self.controller.container_info(self.account,
+-                 self.container)
++                 self.container, self.req)
+             self.check_container_info_return(ret)
+ 
+     # tests if 404 is cached and used
+     def test_container_info_404(self):
+-        def account_info(self, account, autocreate=False):
++        def account_info(self, account, req, autocreate=False):
+             return True, True, 0
+ 
+         with save_globals():
+             proxy_server.Controller.account_info = account_info
+             proxy_server.http_connect = fake_http_connect(404, 404, 404)
+             ret = self.controller.container_info(self.account,
+-                self.container)
++                self.container, self.req)
+             self.check_container_info_return(ret, True)
+ 
+             cache_key = proxy_server.get_container_memcache_key(self.account,
+@@ -529,7 +538,7 @@ class TestController(unittest.TestCase):
+ 
+             proxy_server.http_connect = fake_http_connect()
+             ret = self.controller.container_info(self.account,
+-                 self.container)
++                 self.container, self.req)
+             self.check_container_info_return(ret, True)
+ 
+     # tests if some http status codes are not cached
+@@ -537,7 +546,7 @@ class TestController(unittest.TestCase):
+         def test(*status_list):
+             proxy_server.http_connect = fake_http_connect(*status_list)
+             ret = self.controller.container_info(self.account,
+-                self.container)
++                self.container, self.req)
+             self.assertEqual(len(self.memcache.keys()), 0)
+             self.check_container_info_return(ret, True)
+ 
+-- 
+1.7.11.7
+
